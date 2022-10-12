@@ -3,44 +3,32 @@
 //! The input data is recorded to "$CARGO_MANIFEST_DIR/recorded.wav".
 
 use clap::Parser;
-use sonogram::ColourGradient;
-use sonogram::ColourTheme;
-use sonogram::FrequencyScale;
-use sonogram::SpecOptionsBuilder;
-use std::cmp::Ordering;
-use std::fs::File;
+use hound::WavReader;
+use ndarray::{s, Array, Array2, Axis, ArrayView2, array};
+use ndarray_stats::QuantileExt;
+use plotters::prelude::*;
+use rustfft::{num_complex::Complex, FftPlanner};
 use std::path::PathBuf;
 
-struct SpectogramImage {
-    data: Vec<f32>,
-    pub width: usize,
-    pub height: usize,
-}
+// returns values, centred on x,y coord
+fn get_square(data: &Array2<f32>, x: usize, y: usize, width: usize) -> Option<ArrayView2<f32>> {
+    let rows = data.nrows();
+    let cols = data.ncols();
+    if x > cols || y > rows {
+        return None;
+    }
 
-impl SpectogramImage {
-    fn get_val(&self, x: usize, y: usize) -> f32 {
-        self.data[y * self.width + x]
-    }
-    fn get_square(&self, x: usize, y: usize, width: usize) -> Vec<f32> {
-        // returns values, centred on x,y coord
-        let mut data = vec![];
-        let min_x = if x < width / 2 { 0 } else { x - width / 2 };
-        let max_x = if x + width / 2 > self.width {self.width-1} else {x + width / 2 - 1};
-        let min_y = if y < width / 2 { 0 } else { y - width / 2 };
-        let max_y = if y + width / 2 > self.height {self.height-1} else {y + width / 2 - 1};
-        // println!("{} {} {} {}", min_x, max_x, min_y, max_y);
-        for i in min_x..=max_x {
-            for j in min_y..=max_y {
-                // data.push(self.get_val(i, j));
-            }
-        }
-        for i in 0..self.width {
-            for j in 0..self.height {
-                data.push(self.get_val(i, j));
-            }
-        }
-        data
-    }
+    let min_x = if x < width / 2 { 0 } else { x - width / 2 };
+    let max_x = x + width / 2;
+    let max_x = usize::min(max_x, cols-1);
+    let min_y = if y < width / 2 { 0 } else { y - width / 2 };
+    let max_y = y + width / 2;
+    let max_y = usize::min(max_y, rows-1);
+
+    // println!("x: {}, width/2: {}, rows: {}, cols: {}, {} {} {} {}", x, width/2, rows, cols, min_x, max_x, min_y, max_y);
+    // dbg!(x, y, width/2, rows, cols, min_x, max_x, min_y, max_y);
+
+    Some(data.slice(s![min_y..=max_y, min_x..=max_x]))
 }
 
 #[derive(Parser, Debug)]
@@ -53,56 +41,19 @@ struct Args {
     input_wav: PathBuf,
 }
 
-// Reads wav file, creates a spectrogram, saves this to a png and to a buffer in memory.
-fn read_wav_to_png(input_wav: &PathBuf) -> Result<SpectogramImage, anyhow::Error> {
-    // Read in the file info to determine length
-    let mut inp_file = File::open(input_wav)?;
-    let (header, data) = wav::read(&mut inp_file)?;
-    println!("{:?}", header);
-    let data_16 = data.as_sixteen().unwrap();
-
-    // Compute the spectrogram giving the number of bins and the window overlap.
-    let spec_builder = SpecOptionsBuilder::new(2048)
-        .load_data_from_file(input_wav)
-        .unwrap()
-        .normalise();
-    let mut spectrograph = spec_builder.build().unwrap().compute();
-
-    // Save the spectrogram to PNG.
-    let time_scale = 1000;
-    let spec_width = data_16.len() / time_scale;
-    let spec_height = 600;
-    let png_file = std::path::Path::new("sonogram.png");
-    let mut gradient = ColourGradient::create(ColourTheme::Rainbow);
-    spectrograph.to_png(
-        &png_file,
-        FrequencyScale::Linear,
-        &mut gradient,
-        spec_width,  // Width
-        spec_height, // Height
-    )?;
-    let spec_buffer =
-        spectrograph.to_buffer(sonogram::FrequencyScale::Linear, spec_width, spec_height);
-
-    Ok(SpectogramImage {
-        data: spec_buffer,
-        width: spec_width,
-        height: spec_height,
-    })
-}
-
-fn max_filter(spec: &SpectogramImage, kernel_size: usize) -> Vec<f32> {
-    let mut filtered = vec![];
-    for y in 0..spec.height {
-        for x in 0..spec.width {
-            let square = spec.get_square(x, y, kernel_size);
-            let max = square.iter().max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-            let max = spec.get_val(x, y);
-            // match max {
-            //     None => panic!("No maximum found"),
-            //     Some(max) => filtered.push(*max),
-            // }
-            filtered.push(max);
+fn max_filter(spec: &Array2<f32>, kernel_size: usize) -> Array2<f32> {
+    let mut filtered = Array::zeros(spec.raw_dim());
+    for x in 0..spec.ncols() {
+        for y in 0..spec.nrows() {
+            let square = get_square(spec, x, y, kernel_size).unwrap();
+            let max = square.max();
+            match max {
+                Ok(_) => (),
+                Err(_) => {dbg!(x, y, kernel_size);}
+            }
+            let pos = filtered.get_mut((y, x)).expect("out of bounds");
+            // let max = spec.get((x, y)).expect("out of bounds");
+            *pos = *max.unwrap();
         }
     }
     filtered
@@ -112,28 +63,92 @@ fn main() -> Result<(), anyhow::Error> {
     let args = Args::parse();
 
     let _database_path = PathBuf::from(args.database);
-    let spectrograph = read_wav_to_png(&args.input_wav)?;
-
     let kernel_size = 5;
 
-    dbg!(spectrograph.width, spectrograph.height);
+    let windows = read_wav_to_fft(&args.input_wav)?;
+    
+    let filtered = max_filter(&windows, kernel_size);
+    let out_path = PathBuf::from("output.png");
+    let out_path_max = PathBuf::from("output_max.png");
 
-    // let filtered = max_filter(&spectrograph, kernel_size);
-    let filtered = spectrograph.data.clone();
-
-    let spec_builder = SpecOptionsBuilder::new(2048).load_data_from_memory_f32(filtered, 11025);
-    let mut s = spec_builder.build().unwrap().compute();
-
-    // Save the spectrogram to PNG.
-    let png_file = std::path::Path::new("sonogram_max.png");
-    let mut gradient = ColourGradient::create(ColourTheme::Rainbow);
-    s.to_png(
-        &png_file,
-        FrequencyScale::Linear,
-        &mut gradient,
-        spectrograph.width,  // Width
-        spectrograph.height, // Height
-    )?;
+    save_png(&windows, out_path);
+    save_png(&filtered, out_path_max);
 
     Ok(())
+}
+
+const WINDOW_SIZE: usize = 44100 / 5;
+const OVERLAP: f64 = 0.1;
+const SKIP_SIZE: usize = (WINDOW_SIZE as f64 * (1f64 - OVERLAP)) as usize;
+
+fn read_wav_to_fft(filename: &PathBuf) -> Result<Array2<f32>, anyhow::Error> {
+    let mut wav = WavReader::open(filename).unwrap();
+    let samples = wav.samples().collect::<Result<Vec<i16>, _>>().unwrap();
+
+    println!("Creating windows {window_size} samples long from a timeline {num_samples} samples long, picking every {skip_size} windows with a {overlap} overlap for a total of {num_windows} windows.",
+        window_size = WINDOW_SIZE, num_samples = samples.len(), skip_size = SKIP_SIZE, overlap = OVERLAP, num_windows = (samples.len() / SKIP_SIZE) - 1,
+    );
+
+    // Convert to an ndarray. f32 for fft.
+    let samples_array = Array::from(samples.clone());
+    let windows = samples_array
+        .windows(ndarray::Dim(WINDOW_SIZE))
+        .into_iter()
+        .step_by(SKIP_SIZE)
+        .collect::<Vec<_>>();
+    let windows = ndarray::stack(Axis(0), &windows)?;
+    let mut windows = windows.map(|i| Complex::from(*i as f32));
+
+    // Prepare fft
+    let mut planner = FftPlanner::new();
+    let fft = planner.plan_fft_forward(WINDOW_SIZE);
+
+    // Since we have a 2-D array of our windows with shape [WINDOW_SIZE, (num_samples / WINDOW_SIZE) - 1], we can run an FFT on every row.
+    // Next step is to do something multithreaded with Rayon, but we're not cool enough for that yet.
+    windows.axis_iter_mut(Axis(0)).for_each(|mut frame| {
+        fft.process(frame.as_slice_mut().unwrap());
+    });
+
+    // Get the real component of those complex numbers we get back from the FFT
+    let windows = windows.map(|i| i.re);
+
+    // And finally, only look at the first half of the spectrogram - the first (n/2)+1 points of each FFT
+    // https://dsp.stackexchange.com/questions/4825/why-is-the-fft-mirrored
+    let windows = windows.slice_move(ndarray::s![.., ..((WINDOW_SIZE / 2) + 1)]);
+
+    Ok(windows)
+}
+
+fn save_png(windows: &Array2<f32>, output_path: PathBuf) {
+    let height = windows.nrows();
+    let width = windows.ncols();
+
+    println!("Generating a {} wide x {} high image", width, height);
+
+    let image_dimensions: (u32, u32) = (width as u32, height as u32);
+    let root_drawing_area = BitMapBackend::new(
+        &output_path,
+        image_dimensions, // width x height. Worth it if we ever want to resize the graph.
+    )
+    .into_drawing_area();
+
+    let spectrogram_cells = root_drawing_area.split_evenly((height, width));
+
+    let windows_scaled = windows.map(|i| i.abs() / (WINDOW_SIZE as f32));
+    let highest_spectral_density = windows_scaled.max_skipnan();
+
+    // transpose and flip around to prepare for graphing
+    let windows_flipped = windows_scaled.slice(ndarray::s![.., ..; -1]); // flips the
+    let windows_flipped = windows_flipped.t();
+
+    // Finally add a color scale
+    let color_scale = colorous::COOL;
+
+    for (cell, spectral_density) in spectrogram_cells.iter().zip(windows_flipped.iter()) {
+        let spectral_density_scaled = spectral_density.sqrt() / highest_spectral_density.sqrt();
+        let color = color_scale.eval_continuous(spectral_density_scaled as f64);
+        cell.fill(&RGBColor(color.r, color.g, color.b)).unwrap();
+    }
+
+    root_drawing_area.present().unwrap();
 }
