@@ -2,13 +2,14 @@
 //!
 //! The input data is recorded to "$CARGO_MANIFEST_DIR/recorded.wav".
 
+use anyhow::Context;
 use clap::Parser;
 use hound::WavReader;
-use ndarray::{s, Array, Array2, Axis, ArrayView2, array};
+use ndarray::{s, Array, Array2, ArrayView2, Axis};
 use ndarray_stats::QuantileExt;
 use plotters::prelude::*;
 use rustfft::{num_complex::Complex, FftPlanner};
-use std::path::PathBuf;
+use std::{path::PathBuf, ffi::OsStr};
 
 // returns values, centred on x,y coord
 fn get_square(data: &Array2<f32>, x: usize, y: usize, width: usize) -> Option<ArrayView2<f32>> {
@@ -20,10 +21,10 @@ fn get_square(data: &Array2<f32>, x: usize, y: usize, width: usize) -> Option<Ar
 
     let min_x = if x < width / 2 { 0 } else { x - width / 2 };
     let max_x = x + width / 2;
-    let max_x = usize::min(max_x, cols-1);
+    let max_x = usize::min(max_x, cols - 1);
     let min_y = if y < width / 2 { 0 } else { y - width / 2 };
     let max_y = y + width / 2;
-    let max_y = usize::min(max_y, rows-1);
+    let max_y = usize::min(max_y, rows - 1);
 
     // println!("x: {}, width/2: {}, rows: {}, cols: {}, {} {} {} {}", x, width/2, rows, cols, min_x, max_x, min_y, max_y);
     // dbg!(x, y, width/2, rows, cols, min_x, max_x, min_y, max_y);
@@ -39,6 +40,12 @@ struct Args {
 
     #[clap(short, long, parse(from_os_str), value_name = "FILE")]
     input_wav: PathBuf,
+
+    #[clap(short, default_value_t = 30)]
+    kernel_size: usize,
+
+    #[clap(short, long, action, default_value_t = false)]
+    save_png: bool,
 }
 
 fn max_filter(spec: &Array2<f32>, kernel_size: usize) -> Array2<f32> {
@@ -49,7 +56,9 @@ fn max_filter(spec: &Array2<f32>, kernel_size: usize) -> Array2<f32> {
             let max = square.max();
             match max {
                 Ok(_) => (),
-                Err(_) => {dbg!(x, y, kernel_size);}
+                Err(_) => {
+                    dbg!(x, y, kernel_size);
+                }
             }
             let pos = filtered.get_mut((y, x)).expect("out of bounds");
             // let max = spec.get((x, y)).expect("out of bounds");
@@ -59,34 +68,99 @@ fn max_filter(spec: &Array2<f32>, kernel_size: usize) -> Array2<f32> {
     filtered
 }
 
+fn find_equal(array_a: &Array2<f32>, array_b: &Array2<f32>) -> Vec<(usize, usize)> {
+    let mut locations = vec![];
+    for (loc, elem) in array_a.indexed_iter() {
+        if *array_b.get(loc).unwrap() == *elem {
+            locations.push(loc);
+        }
+    }
+
+    locations
+}
+
 fn main() -> Result<(), anyhow::Error> {
     let args = Args::parse();
 
     let _database_path = PathBuf::from(args.database);
-    let kernel_size = 5;
 
     let windows = read_wav_to_fft(&args.input_wav)?;
-    
-    let filtered = max_filter(&windows, kernel_size);
-    let out_path = PathBuf::from("output.png");
-    let out_path_max = PathBuf::from("output_max.png");
+    let filtered = max_filter(&windows, args.kernel_size);
 
-    save_png(&windows, out_path);
-    save_png(&filtered, out_path_max);
+    let base_wav_name = args.input_wav.file_stem().unwrap_or(OsStr::new(""));
+    if args.save_png {
+        let mut output_name = base_wav_name.to_os_string();
+        output_name.push("_spec.png");
+        let mut output_name_max = base_wav_name.to_os_string();
+        output_name_max.push("_spec_max.png");
+        let out_path = PathBuf::from(output_name);
+        let out_path_max = PathBuf::from(output_name_max);
+
+        save_png(&windows, out_path);
+        save_png(&filtered, out_path_max);
+    }
+
+    // find peak locations
+    println!("Finding peak locations");
+    let peak_locations = find_equal(&windows, &filtered);
+
+    let mut output_name = base_wav_name.to_os_string();
+    output_name.push("_peaks.png");
+    plot_peaks(&peak_locations, windows.ncols(), windows.nrows(), 4410, PathBuf::from(output_name))
+        .context(format!("Unable to plot peaks"))?;
 
     Ok(())
 }
 
-const WINDOW_SIZE: usize = 44100 / 5;
-const OVERLAP: f64 = 0.1;
-const SKIP_SIZE: usize = (WINDOW_SIZE as f64 * (1f64 - OVERLAP)) as usize;
+fn plot_peaks(
+    peak_locations: &[(usize, usize)],
+    height: usize,
+    width: usize,
+    samples_per_second: usize,
+    output_path: PathBuf,
+) -> Result<(), anyhow::Error> {
+    println!("Plotting peaks");
+    dbg!(height, width);
+    let root = BitMapBackend::new(&output_path, (width as u32 / 2, height as u32 / 2))
+        .into_drawing_area();
+
+    root.fill(&WHITE)?;
+
+    let areas = root.split_by_breakpoints([width as u32 - 40], [40]);
+
+    let mut scatter_ctx = ChartBuilder::on(&areas[2])
+        .x_label_area_size(40)
+        .y_label_area_size(40)
+        .build_cartesian_2d(0..width, 0..height*5)?;
+    scatter_ctx
+        .configure_mesh()
+        .disable_x_mesh()
+        .disable_y_mesh()
+        .draw()?;
+    scatter_ctx.draw_series(
+        peak_locations
+            .iter()
+            .map(|(x, y)| Circle::new((*x/samples_per_second, *y*10/2), 2, GREEN.filled())),
+    )?;
+
+    // To avoid the IO failure being ignored silently, we manually call the present function
+    root.present().expect("Unable to write result to file, please make sure 'plotters-doc-data' dir exists under current dir");
+    println!("Result has been saved to {}", output_path.to_string_lossy());
+
+    Ok(())
+}
 
 fn read_wav_to_fft(filename: &PathBuf) -> Result<Array2<f32>, anyhow::Error> {
+    const WINDOW_SIZE: usize = 44100 / 10;
+    const WINDOW_OVERLAP: f64 = 0.0;
+    const SKIP_SIZE: usize = (WINDOW_SIZE as f64 * (1f64 - WINDOW_OVERLAP)) as usize;
+
+    println!("Reading wav file");
     let mut wav = WavReader::open(filename).unwrap();
     let samples = wav.samples().collect::<Result<Vec<i16>, _>>().unwrap();
 
     println!("Creating windows {window_size} samples long from a timeline {num_samples} samples long, picking every {skip_size} windows with a {overlap} overlap for a total of {num_windows} windows.",
-        window_size = WINDOW_SIZE, num_samples = samples.len(), skip_size = SKIP_SIZE, overlap = OVERLAP, num_windows = (samples.len() / SKIP_SIZE) - 1,
+        window_size = WINDOW_SIZE, num_samples = samples.len(), skip_size = SKIP_SIZE, overlap = WINDOW_OVERLAP, num_windows = (samples.len() / SKIP_SIZE) - 1,
     );
 
     // Convert to an ndarray. f32 for fft.
@@ -100,6 +174,7 @@ fn read_wav_to_fft(filename: &PathBuf) -> Result<Array2<f32>, anyhow::Error> {
     let mut windows = windows.map(|i| Complex::from(*i as f32));
 
     // Prepare fft
+    println!("Performing fft");
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(WINDOW_SIZE);
 
@@ -120,8 +195,8 @@ fn read_wav_to_fft(filename: &PathBuf) -> Result<Array2<f32>, anyhow::Error> {
 }
 
 fn save_png(windows: &Array2<f32>, output_path: PathBuf) {
-    let height = windows.nrows();
-    let width = windows.ncols();
+    let height = windows.ncols();
+    let width = windows.nrows();
 
     println!("Generating a {} wide x {} high image", width, height);
 
@@ -134,7 +209,8 @@ fn save_png(windows: &Array2<f32>, output_path: PathBuf) {
 
     let spectrogram_cells = root_drawing_area.split_evenly((height, width));
 
-    let windows_scaled = windows.map(|i| i.abs() / (WINDOW_SIZE as f32));
+    let window_size = (height - 1) * 2;
+    let windows_scaled = windows.map(|i| i.abs() / (window_size as f32));
     let highest_spectral_density = windows_scaled.max_skipnan();
 
     // transpose and flip around to prepare for graphing
@@ -142,10 +218,10 @@ fn save_png(windows: &Array2<f32>, output_path: PathBuf) {
     let windows_flipped = windows_flipped.t();
 
     // Finally add a color scale
-    let color_scale = colorous::COOL;
+    let color_scale = colorous::PLASMA;
 
     for (cell, spectral_density) in spectrogram_cells.iter().zip(windows_flipped.iter()) {
-        let spectral_density_scaled = spectral_density.sqrt() / highest_spectral_density.sqrt();
+        let spectral_density_scaled = 2.*spectral_density.sqrt() / highest_spectral_density.sqrt();
         let color = color_scale.eval_continuous(spectral_density_scaled as f64);
         cell.fill(&RGBColor(color.r, color.g, color.b)).unwrap();
     }
