@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
-use ndarray::{Array2, Array, s, ArrayView2};
+use ndarray::{s, Array, Array2, ArrayView2};
 use ndarray_stats::QuantileExt;
 use plotters::prelude::*;
-
 
 pub fn save_png(windows: &Array2<f32>, output_path: PathBuf) {
     let height = windows.ncols();
@@ -32,7 +31,8 @@ pub fn save_png(windows: &Array2<f32>, output_path: PathBuf) {
     let color_scale = colorous::PLASMA;
 
     for (cell, spectral_density) in spectrogram_cells.iter().zip(windows_flipped.iter()) {
-        let spectral_density_scaled = 2.*spectral_density.sqrt() / highest_spectral_density.sqrt();
+        let spectral_density_scaled =
+            2. * spectral_density.sqrt() / highest_spectral_density.sqrt();
         let color = color_scale.eval_continuous(spectral_density_scaled as f64);
         cell.fill(&RGBColor(color.r, color.g, color.b)).unwrap();
     }
@@ -96,32 +96,46 @@ pub fn plot_peaks(
     peak_locations: &[(usize, usize)],
     height: usize,
     width: usize,
-    samples_per_second: usize,
+    window_length: f32,
     output_path: PathBuf,
 ) -> Result<(), anyhow::Error> {
     println!("Plotting peaks");
     dbg!(height, width);
-    let root = BitMapBackend::new(&output_path, (width as u32 / 2 + 200, height as u32 / 2 + 40))
-        .into_drawing_area();
+
+    let frequency_resolution_hz = (1. / window_length) as usize;
+    let image_vertical_scale = 2;
+    let root = BitMapBackend::new(
+        &output_path,
+        (width as u32 + 40, height as u32 / image_vertical_scale + 40),
+    )
+    .into_drawing_area();
 
     root.fill(&WHITE)?;
 
     let areas = root.split_by_breakpoints([width as u32 - 40], [40]);
-
+    dbg!(width * window_length as usize);
     let mut scatter_ctx = ChartBuilder::on(&areas[2])
         .x_label_area_size(40)
         .y_label_area_size(40)
-        .build_cartesian_2d(0..width*height/samples_per_second, 0..height*5)?;
+        .build_cartesian_2d(
+            0..((width as f32) * window_length) as usize,
+            0..height * frequency_resolution_hz / image_vertical_scale as usize,
+        )?;
     scatter_ctx
         .configure_mesh()
         .disable_x_mesh()
         .disable_y_mesh()
         .draw()?;
-    scatter_ctx.draw_series(
-        peak_locations
-            .iter()
-            .map(|(x, y)| Circle::new((*x*height/samples_per_second, *y*10/2), 2, GREEN.filled())),
-    )?;
+    scatter_ctx.draw_series(peak_locations.iter().map(|(x, y)| {
+        Circle::new(
+            (
+                ((*x as f32) * window_length) as usize,
+                *y * frequency_resolution_hz / image_vertical_scale as usize,
+            ),
+            2,
+            GREEN.filled(),
+        )
+    }))?;
 
     // To avoid the IO failure being ignored silently, we manually call the present function
     root.present().expect("Unable to write result to file, please make sure 'plotters-doc-data' dir exists under current dir");

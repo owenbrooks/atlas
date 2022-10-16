@@ -4,9 +4,13 @@
 
 use anyhow::Context;
 use clap::Parser;
-use std::{path::{PathBuf, Path}, ffi::OsStr, fs};
-mod image_ops;
+use std::{
+    ffi::OsStr,
+    fs,
+    path::{Path, PathBuf},
+};
 mod audio_ops;
+mod image_ops;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -17,9 +21,14 @@ struct Args {
     #[clap(short, long, parse(from_os_str), value_name = "FILE")]
     input_wav: PathBuf,
 
-    #[clap(short, default_value_t = 30)]
-    kernel_size: usize,
+    // analysis parameters
+    #[clap(long, default_value_t = 0.1)]
+    window_length: f32, // in seconds
 
+    #[clap(short, default_value_t = 30)]
+    kernel_size: usize, // used for maximum filter
+
+    // actions
     #[clap(short, long, action, default_value_t = false)]
     save_png: bool,
 }
@@ -29,7 +38,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     let _database_path = PathBuf::from(args.database);
 
-    let windows = audio_ops::read_wav_to_fft(&args.input_wav)?;
+    let windows = audio_ops::read_wav_to_fft(&args.input_wav, args.window_length)?;
     let filtered = image_ops::max_filter(&windows, args.kernel_size);
 
     let output_dir = Path::new("output");
@@ -54,8 +63,14 @@ fn main() -> Result<(), anyhow::Error> {
 
     let mut output_name = base_wav_name.to_os_string();
     output_name.push("_peaks.png");
-    image_ops::plot_peaks(&peak_locations, windows.ncols(), windows.nrows(), 44100, output_dir.join(output_name))
-        .context(format!("Unable to plot peaks"))?;
+    image_ops::plot_peaks(
+        &peak_locations,
+        windows.ncols(),
+        windows.nrows(),
+        args.window_length,
+        output_dir.join(output_name),
+    )
+    .context(format!("Unable to plot peaks"))?;
 
     Ok(())
 }
