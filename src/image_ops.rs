@@ -101,7 +101,7 @@ pub fn plot_peaks(
 ) -> Result<(), anyhow::Error> {
     println!("Plotting peaks");
     dbg!(height, width);
-    let root = BitMapBackend::new(&output_path, (width as u32 / 2 + 2000, height as u32 / 2 + 40))
+    let root = BitMapBackend::new(&output_path, (width as u32 / 2 + 120, height as u32 / 2 + 40))
         .into_drawing_area();
 
     root.fill(&WHITE)?;
@@ -111,7 +111,7 @@ pub fn plot_peaks(
     let mut scatter_ctx = ChartBuilder::on(&areas[2])
         .x_label_area_size(40)
         .y_label_area_size(40)
-        .build_cartesian_2d(0..width*height/(samples_per_second*10), 0..height*5)?;
+        .build_cartesian_2d(0..width*height/samples_per_second, 0..height*5)?;
     scatter_ctx
         .configure_mesh()
         .disable_x_mesh()
@@ -120,7 +120,7 @@ pub fn plot_peaks(
     scatter_ctx.draw_series(
         peak_locations
             .iter()
-            .map(|(x, y)| Circle::new((*x*height/(samples_per_second*10), *y*10/2), 2, GREEN.filled())),
+            .map(|(x, y)| Circle::new((*x*height/samples_per_second, *y*10/2), 2, GREEN.filled())),
     )?;
 
     // To avoid the IO failure being ignored silently, we manually call the present function
