@@ -27,6 +27,8 @@ struct Args {
 
     #[clap(short, default_value_t = 30)]
     kernel_size: usize, // used for maximum filter
+    #[clap(short, long, default_value_t = 0.1)]
+    magnitude_threshold: f32, // used for maximum filter
 
     // actions
     #[clap(short, long, action, default_value_t = false)]
@@ -46,8 +48,8 @@ fn main() -> Result<(), anyhow::Error> {
 
     let base_wav_name = args.input_wav.file_stem().unwrap_or(OsStr::new(""));
 
-    let windows = if !args.read_from_cache { 
-        audio_ops::read_wav_to_fft(&args.input_wav, args.window_length)? 
+    let windows = if !args.read_from_cache {
+        audio_ops::read_wav_to_fft(&args.input_wav, args.window_length)?
     } else {
         audio_ops::read_cached_fft(&base_wav_name)?
     };
@@ -55,7 +57,7 @@ fn main() -> Result<(), anyhow::Error> {
     if args.save_to_cache {
         audio_ops::save_to_cache(&base_wav_name, &windows)?;
     }
-    
+
     let filtered = image_ops::max_filter(&windows, args.kernel_size);
 
     let output_dir = Path::new("output");
@@ -76,11 +78,18 @@ fn main() -> Result<(), anyhow::Error> {
     // find peak locations
     println!("Finding peak locations");
     let peak_locations = image_ops::find_equal(&windows, &filtered);
+    // filter for only peaks bigger than magnitude threshold
+
+    let max_peak_locations: Vec<(usize, usize)> = peak_locations
+        .iter()
+        .filter(|&&loc| *windows.get(loc).unwrap() > args.magnitude_threshold)
+        .map(|&loc| loc)
+        .collect();
 
     let mut output_name = base_wav_name.to_os_string();
     output_name.push("_peaks.png");
     image_ops::plot_peaks(
-        &peak_locations,
+        &max_peak_locations,
         windows.ncols(),
         windows.nrows(),
         args.window_length,

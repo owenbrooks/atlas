@@ -8,10 +8,9 @@ use std::{
 use anyhow::Context;
 use bincode::{deserialize_from, serialize_into};
 use hound::WavReader;
-use ndarray::{array, Array, Array2, Axis};
+use ndarray::{Array, Array2, Axis};
 use rustfft::{num_complex::Complex, FftPlanner};
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 
 pub fn read_wav_to_fft(
     filename: &PathBuf,
@@ -79,7 +78,10 @@ pub fn read_cached_fft(base_wav_name: &OsStr) -> Result<Array2<f32>, anyhow::Err
     let mut file_name = base_wav_name.to_os_string();
     file_name.push(".bin");
 
-    let file = File::open(&file_name).context(format!("Unable to open cache file {}", &file_name.to_string_lossy()))?;
+    let file = File::open(&file_name).context(format!(
+        "Unable to open cache file {}",
+        &file_name.to_string_lossy()
+    ))?;
     let buf_stream_reader = BufReader::new(file);
     let spec_encoded: Vec<u8> = deserialize_from(buf_stream_reader)?;
     let spec = bincode::deserialize(&spec_encoded)?;
@@ -94,7 +96,10 @@ pub fn read_cached_peaks(base_wav_name: &OsStr) -> Result<Vec<(usize, usize)>, a
     let mut file_name = base_wav_name.to_os_string();
     file_name.push(".bin");
 
-    let file = File::open(&file_name).context(format!("Unable to open cache file {}", &file_name.to_string_lossy()))?;
+    let file = File::open(&file_name).context(format!(
+        "Unable to open cache file {}",
+        &file_name.to_string_lossy()
+    ))?;
     let buf_stream_reader = BufReader::new(file);
     let spec_encoded: Vec<u8> = deserialize_from(buf_stream_reader)?;
     let spec = bincode::deserialize(&spec_encoded)?;
