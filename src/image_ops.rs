@@ -101,7 +101,7 @@ pub fn plot_peaks(
 ) -> Result<(), anyhow::Error> {
     println!("Plotting peaks");
     dbg!(height, width);
-    let root = BitMapBackend::new(&output_path, (width as u32 / 2 + 120, height as u32 / 2 + 40))
+    let root = BitMapBackend::new(&output_path, (width as u32 / 2 + 200, height as u32 / 2 + 40))
         .into_drawing_area();
 
     root.fill(&WHITE)?;

@@ -4,7 +4,7 @@
 
 use anyhow::Context;
 use clap::Parser;
-use std::{path::PathBuf, ffi::OsStr};
+use std::{path::{PathBuf, Path}, ffi::OsStr, fs};
 mod image_ops;
 mod audio_ops;
 
@@ -32,14 +32,17 @@ fn main() -> Result<(), anyhow::Error> {
     let windows = audio_ops::read_wav_to_fft(&args.input_wav)?;
     let filtered = image_ops::max_filter(&windows, args.kernel_size);
 
+    let output_dir = Path::new("output");
+    fs::create_dir_all(output_dir)?;
+
     let base_wav_name = args.input_wav.file_stem().unwrap_or(OsStr::new(""));
     if args.save_png {
         let mut output_name = base_wav_name.to_os_string();
         output_name.push("_spec.png");
         let mut output_name_max = base_wav_name.to_os_string();
         output_name_max.push("_spec_max.png");
-        let out_path = PathBuf::from(output_name);
-        let out_path_max = PathBuf::from(output_name_max);
+        let out_path = output_dir.join(output_name);
+        let out_path_max = output_dir.join(output_name_max);
 
         image_ops::save_png(&windows, out_path);
         image_ops::save_png(&filtered, out_path_max);
@@ -51,7 +54,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     let mut output_name = base_wav_name.to_os_string();
     output_name.push("_peaks.png");
-    image_ops::plot_peaks(&peak_locations, windows.ncols(), windows.nrows(), 44100, PathBuf::from(output_name))
+    image_ops::plot_peaks(&peak_locations, windows.ncols(), windows.nrows(), 44100, output_dir.join(output_name))
         .context(format!("Unable to plot peaks"))?;
 
     Ok(())
