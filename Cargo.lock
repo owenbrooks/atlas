@@ -43,6 +43,7 @@ dependencies = [
  "clap",
  "colorous",
  "hound",
+ "itertools",
  "ndarray",
  "ndarray-stats",
  "plotters",

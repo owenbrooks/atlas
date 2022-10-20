@@ -1,12 +1,6 @@
-use std::{
-    ffi::OsStr,
-    fs::File,
-    io::{BufReader, BufWriter},
-    path::PathBuf,
-};
+use std::path::PathBuf;
 
 use anyhow::Context;
-use bincode::{deserialize_from, serialize_into};
 use hound::WavReader;
 use ndarray::{Array, Array2, Axis};
 use rustfft::{num_complex::Complex, FftPlanner};
@@ -71,60 +65,7 @@ pub fn read_wav_to_fft(
     Ok(windows)
 }
 
-pub fn read_cached_fft(base_wav_name: &OsStr) -> Result<Array2<f32>, anyhow::Error> {
-    println!("Reading from cache");
-    // let mut spec_raw = vec![];
-
-    let mut file_name = base_wav_name.to_os_string();
-    file_name.push(".bin");
-
-    let file = File::open(&file_name).context(format!(
-        "Unable to open cache file {}",
-        &file_name.to_string_lossy()
-    ))?;
-    let buf_stream_reader = BufReader::new(file);
-    let spec_encoded: Vec<u8> = deserialize_from(buf_stream_reader)?;
-    let spec = bincode::deserialize(&spec_encoded)?;
-
-    Ok(spec)
-}
-
-pub fn read_cached_peaks(base_wav_name: &OsStr) -> Result<Vec<(usize, usize)>, anyhow::Error> {
-    println!("Reading from cache");
-    // let mut spec_raw = vec![];
-
-    let mut file_name = base_wav_name.to_os_string();
-    file_name.push(".bin");
-
-    let file = File::open(&file_name).context(format!(
-        "Unable to open cache file {}",
-        &file_name.to_string_lossy()
-    ))?;
-    let buf_stream_reader = BufReader::new(file);
-    let spec_encoded: Vec<u8> = deserialize_from(buf_stream_reader)?;
-    let spec = bincode::deserialize(&spec_encoded)?;
-
-    Ok(spec)
-}
-
 #[derive(Serialize, Deserialize)]
 struct Spectrogram {
     data: Array2<f32>,
-}
-
-pub fn save_to_cache(base_wav_name: &OsStr, windows: &Array2<f32>) -> Result<(), anyhow::Error> {
-    let mut output_name = base_wav_name.to_os_string();
-    output_name.push(".bin");
-
-    println!("Saving to cache");
-    let spec = Spectrogram {
-        data: windows.clone(),
-    };
-    let encoded_spec = bincode::serialize(&spec).context("Failed to serialise file")?;
-
-    let mut f = BufWriter::new(File::create(&output_name).unwrap());
-    serialize_into(&mut f, &encoded_spec).context("Failed to save file")?;
-    println!("Saved to {}", output_name.to_string_lossy());
-
-    Ok(())
 }

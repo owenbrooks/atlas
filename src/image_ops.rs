@@ -113,7 +113,7 @@ pub fn plot_peaks(
     root.fill(&WHITE)?;
 
     let areas = root.split_by_breakpoints([width as u32 - 40], [40]);
-    dbg!(width * window_length as usize);
+    dbg!(window_length, ((width as f32) * window_length) as usize);
     let mut scatter_ctx = ChartBuilder::on(&areas[2])
         .x_label_area_size(40)
         .y_label_area_size(40)

@@ -8,6 +8,12 @@ pub struct PeakPair {
     delta_t: usize, // multiple of time_window
 }
 
+#[derive(Debug)]
+pub struct PairRecord {
+    pub hash: u64,
+    pub time_a: u64, // multiple of 1/time_window
+}
+
 pub fn pair_from_locations(loc_a: (usize, usize), loc_b: (usize, usize)) -> PeakPair {
     PeakPair {
         freq_a: loc_a.1,
@@ -20,4 +26,54 @@ pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
     let mut s = DefaultHasher::new();
     t.hash(&mut s);
     s.finish()
+}
+
+pub fn fingerprint(
+    peak_locations: Vec<(usize, usize)>,
+    window_length: f32,
+    target_zone_delay_sec: f32,
+    target_zone_height_hz: f32,
+    target_zone_width_sec: f32,
+) -> Vec<PairRecord> {
+    let frequency_resolution = 1. / window_length;
+
+    // Find pairs of peaks where one peak is in the target zone of the other
+    let mut close_pairs = vec![];
+    dbg!(peak_locations.len());
+    for (i, loc_a) in peak_locations.iter().enumerate() {
+        for loc_b in peak_locations[i + 1..].iter() {
+            // dbg!(loc_b.0, loc_a.0, target_zone_delay_sec / window_length, target_zone_width_sec / window_length);
+            if loc_b.0 - loc_a.0
+                > (target_zone_delay_sec / window_length + target_zone_width_sec / window_length)
+                    as usize
+            {
+                break; // past the end of the target zone
+            } else {
+                // within x axis range
+                if loc_b.1.abs_diff(loc_a.1)
+                    < ((target_zone_height_hz / frequency_resolution) / 2.) as usize
+                {
+                    // within frequency range
+                    // dbg!("added");
+                    close_pairs.push((loc_a, loc_b))
+                } else {
+                    // dbg!("didn't add");
+                }
+            }
+        }
+    }
+
+    println!("Calculating {} hashes", close_pairs.len());
+    // Calculate hashes to create pair records
+    close_pairs
+        .iter()
+        .map(|(&loc_a, &loc_b)| {
+            let pair = pair_from_locations(loc_a, loc_b);
+            let hash = calculate_hash(&pair);
+            PairRecord {
+                hash,
+                time_a: loc_a.0 as u64,
+            }
+        })
+        .collect()
 }

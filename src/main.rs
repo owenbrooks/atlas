@@ -3,9 +3,8 @@
 //! The input data is recorded to "$CARGO_MANIFEST_DIR/recorded.wav".
 
 use anyhow::Context;
-use clap::{Command, Parser, Subcommand};
+use clap::Parser;
 use std::{
-    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
 };
@@ -39,9 +38,9 @@ struct Args {
     // matching target zone parameters
     #[clap(short, long, default_value_t = 0.1)]
     target_zone_delay_sec: f32,
-    #[clap(short, long, default_value_t = 10.0)]
+    #[clap(short, long, default_value_t = 750.0)]
     target_zone_height_hz: f32,
-    #[clap(short, long, default_value_t = 1.0)]
+    #[clap(short, long, default_value_t = 3.0)]
     target_zone_width_sec: f32,
 
     // actions
@@ -113,9 +112,73 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
     let track_id = database::add_track(&conn, &track_name)?;
     println!("Track {} added with id {}", track_name, track_id);
 
-    // add fingerprint to database
+    // generate fingerprint
+    println!("fingerprinting");
+    let pair_records = hash::fingerprint(
+        max_peak_locations,
+        args.window_length,
+        args.target_zone_delay_sec,
+        args.target_zone_height_hz,
+        args.target_zone_width_sec,
+    );
+    println!("done fingerprinting");
+    // add fingerprint to database, deleting existing records
+    // TODO: make this into a transaction
+    let mut delete_statement = conn.prepare("DELETE FROM fingerprints WHERE track_id = (?1)")?;
+    delete_statement.execute([track_id])?;
+
+    let mut insert_statement =
+        conn.prepare("INSERT INTO fingerprints (hash, time_a, track_id) values (?1, ?2, ?3)")?;
+    for record in &pair_records {
+        insert_statement
+            .execute(&[
+                &record.hash.to_string(),
+                &record.time_a.to_string(),
+                &track_id.to_string(),
+            ])
+            .context("Failed to insert.")?;
+    }
+    println!("Inserted {} fingerprints", pair_records.len());
 
     Ok(())
+}
+
+fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
+    let wav_base_name = args
+        .input_wav
+        .file_stem()
+        .context("Please provide a file not a directory.")?;
+
+    let windows = audio_ops::read_wav_to_fft(&args.input_wav, args.window_length)?;
+    let filtered = image_ops::max_filter(&windows, args.kernel_size);
+
+    // find peak locations
+    println!("Finding peak locations");
+    let peak_locations = image_ops::find_equal(&windows, &filtered);
+    // filter for only peaks bigger than magnitude threshold
+    let max_peak_locations: Vec<(usize, usize)> = peak_locations
+        .iter()
+        .filter(|&&loc| *windows.get(loc).unwrap() > args.magnitude_threshold)
+        .map(|&loc| loc)
+        .collect();
+
+    // add track to track list
+    let conn = database::connect(&args.database)?;
+
+    // generate fingerprint
+    let pair_records = hash::fingerprint(
+        max_peak_locations,
+        args.window_length,
+        args.target_zone_delay_sec,
+        args.target_zone_height_hz,
+        args.target_zone_width_sec,
+    );
+
+    // retrieve all fingerprints with a matching hash, grouped by track_id
+
+    todo!();
+
+    // Ok(())
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -124,9 +187,13 @@ fn main() -> Result<(), anyhow::Error> {
     if let Some(action) = args.action {
         match action {
             Action::Add => {
+                println!("Adding track to database.");
                 add(&args)?;
             }
-            Action::Match => {}
+            Action::Match => {
+                println!("Attempting to match sample to existing tracks");
+                match_sample(&args)?;
+            }
         }
     } else {
         let conn = database::connect(&args.database)?;
@@ -138,13 +205,6 @@ fn main() -> Result<(), anyhow::Error> {
         let track_id = database::add_track(&conn, track_name.to_string().as_str())?;
         println!("Track {} added with id {}", track_name, track_id);
     }
-
-    // create database if not exists
-    // create table if not exists
-    // add song if not exists, else delete all associated hashes
-    // for each peak
-    // // for each peak in target zone
-    // // // calc hash. store in table w/ point A time and track ID.
 
     Ok(())
 }
