@@ -4,8 +4,8 @@ use rusqlite::Connection;
 
 /// Adds new record for song title. Returns track_id.
 /// If track is already in table, returns existing id
-pub fn add_track(conn: &Connection, title: &str) -> Result<u64, anyhow::Error> {
-    let id: Result<u64, rusqlite::Error> = conn.query_row(
+pub fn add_track(conn: &Connection, title: &str) -> Result<u32, anyhow::Error> {
+    let id: Result<u32, rusqlite::Error> = conn.query_row(
         "SELECT rowid from tracks WHERE title = (?)",
         &[&title.to_string()],
         |row| row.get(0),
@@ -17,7 +17,7 @@ pub fn add_track(conn: &Connection, title: &str) -> Result<u64, anyhow::Error> {
             &[&title.to_string()],
         );
         insertion_result.unwrap(); // TODO: handle this error
-        let id = conn.last_insert_rowid() as u64;
+        let id = conn.last_insert_rowid() as u32;
         id
     };
 
@@ -43,7 +43,7 @@ pub fn connect(database: &PathBuf) -> Result<Connection, anyhow::Error> {
         "CREATE TABLE IF NOT EXISTS fingerprints (
             id INTEGER PRIMARY KEY,
             hash INTEGER NOT NULL,
-            time_a INTEGER NOT NULL,
+            track_time INTEGER NOT NULL,
             track_id INTEGER NOT NULL
         )",
         (),

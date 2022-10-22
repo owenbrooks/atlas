@@ -4,9 +4,11 @@
 
 use anyhow::Context;
 use clap::Parser;
+use itertools::Itertools;
+use rusqlite::params;
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Path, PathBuf}, collections::HashMap,
 };
 mod audio_ops;
 mod database;
@@ -127,12 +129,13 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
     let mut delete_statement = conn.prepare("DELETE FROM fingerprints WHERE track_id = (?1)")?;
     delete_statement.execute([track_id])?;
 
+
     let mut insert_statement =
-        conn.prepare("INSERT INTO fingerprints (hash, time_a, track_id) values (?1, ?2, ?3)")?;
-    for record in &pair_records {
+        conn.prepare("INSERT INTO fingerprints (hash, track_time, track_id) values (?1, ?2, ?3)")?;
+    for (hash, record) in &pair_records {
         insert_statement
             .execute(&[
-                &record.hash.to_string(),
+                &hash.to_string(),
                 &record.time_a.to_string(),
                 &track_id.to_string(),
             ])
@@ -144,11 +147,6 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
 }
 
 fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
-    let wav_base_name = args
-        .input_wav
-        .file_stem()
-        .context("Please provide a file not a directory.")?;
-
     let windows = audio_ops::read_wav_to_fft(&args.input_wav, args.window_length)?;
     let filtered = image_ops::max_filter(&windows, args.kernel_size);
 
@@ -162,9 +160,6 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
         .map(|&loc| loc)
         .collect();
 
-    // add track to track list
-    let conn = database::connect(&args.database)?;
-
     // generate fingerprint
     let pair_records = hash::fingerprint(
         max_peak_locations,
@@ -173,12 +168,49 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
         args.target_zone_height_hz,
         args.target_zone_width_sec,
     );
-
+    
     // retrieve all fingerprints with a matching hash, grouped by track_id
+    // for each track id, for each matching hash, calculate track_time-sample_time
+    // keep track of the number of instances of that time difference in a hash map
+    // once done a track, find bin with highest count. If high enough, a match has been found.
+    // if not, continue to next track
+    // if done all tracks, return no match
+    let conn = database::connect(&args.database)?;
+    rusqlite::vtab::array::load_module(&conn)?;
 
-    todo!();
+    let sample_times = pair_records.values().map(|rec| rec.time_a).collect_vec();
+    // let sample_times = std::rc::Rc::new(sample_times.iter().copied().map(rusqlite::types::Value::from).collect::<Vec<rusqlite::types::Value>>());
+    let hashes = std::rc::Rc::new(pair_records.keys().copied().map(rusqlite::types::Value::from).collect::<Vec<rusqlite::types::Value>>());
+    
+    // find tracks that have at least one match
+    let mut track_query = conn.prepare("SELECT DISTINCT track_id FROM fingerprints WHERE hash IN rarray(?1)")?;
+    let candidate_tracks = track_query.query_map(params![hashes], |row| {
+        row.get::<_, u32>(0)
+    })?;
 
-    // Ok(())
+    for track_id in candidate_tracks {
+        // find hash matches and bin based on track-sample time offset
+        let track_id = track_id?;
+
+        let mut hash_query = conn.prepare("SELECT hash, track_time FROM fingerprints WHERE track_id = (?1) AND hash IN rarray(?2)")?;
+        let rows = hash_query.query_map(params![track_id, hashes], |row| {
+            row.get::<_, u32>(1)
+        })?;
+        let track_times: Vec<u32> = rows.into_iter().collect::<Result<Vec<u32>, rusqlite::Error>>()?;
+        
+        let mut time_bins = HashMap::new();
+
+        for (index, &track_time) in track_times.iter().enumerate() {
+            let sample_time = sample_times[index];
+            if track_time >= sample_time { // matches are only possible in this case
+                let match_time_candidate = track_time - sample_time;
+                *time_bins.entry(match_time_candidate).or_insert(0) += 1;
+            }
+        }
+        println!("{:#?}", time_bins);
+    }
+
+    Ok(())
 }
 
 fn main() -> Result<(), anyhow::Error> {
