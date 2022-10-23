@@ -48,7 +48,7 @@ struct Args {
     window_length: f32, // in seconds
     #[clap(short, default_value_t = 30)]
     kernel_size: usize, // used for maximum filter
-    #[clap(short, long, default_value_t = 0.1)]
+    #[clap(short, long, default_value_t = 0.0)]
     magnitude_threshold: f32, // used for maximum filter
 
     // matching target zone parameters
@@ -218,15 +218,15 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
     println!("Finding peak locations");
     let peak_locations = image_ops::find_equal(&windows, &filtered);
     // filter for only peaks bigger than magnitude threshold
-    // let max_peak_locations: Vec<(usize, usize)> = peak_locations
-    //     .iter()
-    //     .filter(|&&loc| *windows.get(loc).unwrap() > args.magnitude_threshold)
-    //     .map(|&loc| loc)
-    //     .collect();
+    let max_peak_locations: Vec<(usize, usize)> = peak_locations
+        .iter()
+        .filter(|&&loc| *windows.get(loc).unwrap() > args.magnitude_threshold)
+        .map(|&loc| loc)
+        .collect();
 
     // generate fingerprint
     let pair_records = hash::fingerprint(
-        &peak_locations,
+        &max_peak_locations,
         args.window_length,
         args.target_zone_delay_sec,
         args.target_zone_height_hz,
@@ -244,7 +244,7 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
             windows,
             filtered,
             args.window_length,
-            &peak_locations,
+            &max_peak_locations,
         )?;
     }
 
