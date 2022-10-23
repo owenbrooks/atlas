@@ -7,8 +7,9 @@ use clap::Parser;
 use itertools::Itertools;
 use rusqlite::params;
 use std::{
+    collections::HashMap,
     fs,
-    path::{Path, PathBuf}, collections::HashMap,
+    path::{Path, PathBuf},
 };
 mod audio_ops;
 mod database;
@@ -109,13 +110,13 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
     }
 
     // add track to track list
-    let conn = database::connect(&args.database)?;
+    let mut conn = database::connect(&args.database)?;
     let track_name = wav_base_name.to_string_lossy().to_string();
     let track_id = database::add_track(&conn, &track_name)?;
     println!("Track {} added with id {}", track_name, track_id);
 
     // generate fingerprint
-    println!("fingerprinting");
+    println!("Fingerprinting");
     let pair_records = hash::fingerprint(
         max_peak_locations,
         args.window_length,
@@ -123,24 +124,28 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
         args.target_zone_height_hz,
         args.target_zone_width_sec,
     );
-    println!("done fingerprinting");
+    println!("Done fingerprinting");
     // add fingerprint to database, deleting existing records
     // TODO: make this into a transaction
-    let mut delete_statement = conn.prepare("DELETE FROM fingerprints WHERE track_id = (?1)")?;
-    delete_statement.execute([track_id])?;
+    let transaction = conn.transaction()?;
+    {
+        let mut delete_statement =
+            transaction.prepare("DELETE FROM fingerprints WHERE track_id = (?1)")?;
+        delete_statement.execute([track_id])?;
 
-
-    let mut insert_statement =
-        conn.prepare("INSERT INTO fingerprints (hash, track_time, track_id) values (?1, ?2, ?3)")?;
-    for (hash, record) in &pair_records {
-        insert_statement
-            .execute(&[
-                &hash.to_string(),
-                &record.time_a.to_string(),
-                &track_id.to_string(),
-            ])
-            .context("Failed to insert.")?;
+        let mut insert_statement = transaction
+            .prepare("INSERT INTO fingerprints (hash, track_time, track_id) values (?1, ?2, ?3)")?;
+        for (hash, record) in &pair_records {
+            insert_statement
+                .execute(&[
+                    &hash.to_string(),
+                    &record.time_a.to_string(),
+                    &track_id.to_string(),
+                ])
+                .context("Failed to insert.")?;
+        }
     }
+    transaction.commit()?;
     println!("Inserted {} fingerprints", pair_records.len());
 
     Ok(())
@@ -168,7 +173,7 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
         args.target_zone_height_hz,
         args.target_zone_width_sec,
     );
-    
+
     // retrieve all fingerprints with a matching hash, grouped by track_id
     // for each track id, for each matching hash, calculate track_time-sample_time
     // keep track of the number of instances of that time difference in a hash map
@@ -180,34 +185,40 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
 
     let sample_times = pair_records.values().map(|rec| rec.time_a).collect_vec();
     // let sample_times = std::rc::Rc::new(sample_times.iter().copied().map(rusqlite::types::Value::from).collect::<Vec<rusqlite::types::Value>>());
-    let hashes = std::rc::Rc::new(pair_records.keys().copied().map(rusqlite::types::Value::from).collect::<Vec<rusqlite::types::Value>>());
-    
+    let hashes = std::rc::Rc::new(
+        pair_records
+            .keys()
+            .copied()
+            .map(rusqlite::types::Value::from)
+            .collect::<Vec<rusqlite::types::Value>>(),
+    );
+
     // find tracks that have at least one match
-    let mut track_query = conn.prepare("SELECT DISTINCT track_id FROM fingerprints WHERE hash IN rarray(?1)")?;
-    let candidate_tracks = track_query.query_map(params![hashes], |row| {
-        row.get::<_, u32>(0)
-    })?;
+    let mut track_query =
+        conn.prepare("SELECT DISTINCT track_id FROM fingerprints WHERE hash IN rarray(?1)")?;
+    let candidate_tracks = track_query.query_map(params![hashes], |row| row.get::<_, u32>(0))?;
 
     for track_id in candidate_tracks {
         // find hash matches and bin based on track-sample time offset
         let track_id = track_id?;
 
         let mut hash_query = conn.prepare("SELECT hash, track_time FROM fingerprints WHERE track_id = (?1) AND hash IN rarray(?2)")?;
-        let rows = hash_query.query_map(params![track_id, hashes], |row| {
-            row.get::<_, u32>(1)
-        })?;
-        let track_times: Vec<u32> = rows.into_iter().collect::<Result<Vec<u32>, rusqlite::Error>>()?;
-        
+        let rows = hash_query.query_map(params![track_id, hashes], |row| row.get::<_, u32>(1))?;
+        let track_times: Vec<u32> = rows
+            .into_iter()
+            .collect::<Result<Vec<u32>, rusqlite::Error>>()?;
+
         let mut time_bins = HashMap::new();
 
         for (index, &track_time) in track_times.iter().enumerate() {
             let sample_time = sample_times[index];
-            if track_time >= sample_time { // matches are only possible in this case
-                let match_time_candidate = track_time - sample_time;
-                *time_bins.entry(match_time_candidate).or_insert(0) += 1;
+            if track_time >= sample_time {
+                // matches are only possible in this case
+                let match_offset = track_time - sample_time;
+                *time_bins.entry(match_offset).or_insert(0) += 1;
             }
         }
-        println!("{:#?}", time_bins);
+        println!("track_id: {}, {:#?}", track_id, time_bins);
     }
 
     Ok(())
