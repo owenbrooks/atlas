@@ -1,3 +1,4 @@
+// Spectrogram plotting code adapted from https://github.com/rfilmyer/plotters-spectrogram/blob/339a2e832136ef343963b334910e41c8aaa8be58/src/main.rs
 use std::path::Path;
 
 use anyhow::Context;
@@ -5,10 +6,7 @@ use hound::WavReader;
 use ndarray::{Array, Array2, Axis};
 use rustfft::{num_complex::Complex, FftPlanner};
 
-pub fn read_wav_to_fft(
-    filename: &Path,
-    window_length: f32,
-) -> Result<Array2<f32>, anyhow::Error> {
+pub fn read_wav_to_fft(filename: &Path, window_length: f32) -> Result<Array2<f32>, anyhow::Error> {
     println!("Reading wav file");
     let mut wav = WavReader::open(filename).context("Could not open file for reading.")?;
     let wav_spec = wav.spec();
@@ -24,13 +22,18 @@ pub fn read_wav_to_fft(
     const WINDOW_OVERLAP: f64 = 0.0;
     let skip_size: usize = (window_size as f64 * (1f64 - WINDOW_OVERLAP)) as usize;
 
-    println!("Creating windows {window_size} samples long from a timeline {num_samples} samples long, picking every {skip_size} windows with a {overlap} overlap for a total of {num_windows} windows.",
-        window_size = window_size, num_samples = samples.len(), skip_size = skip_size, overlap = WINDOW_OVERLAP, num_windows = (samples.len() / skip_size) - 1,
+    println!("Creating windows {window_size} samples long from a timeline {num_samples} samples long, for a total of {num_windows} windows.",
+        window_size = window_size, num_samples = samples.len(), num_windows = (samples.len() / skip_size) - 1,
     );
+    let channel_count = wav.spec().channels;
+    let mut channel_description = format!("{} channel", channel_count);
+    if channel_count > 1 {
+        channel_description.push_str("s");
+    }
     println!(
-        "Sample rate is {sample_rate} Hz. Bit depth is {}. {} channels ",
+        "Sample rate is {sample_rate} Hz. Bit depth is {}. {}",
         wav.spec().bits_per_sample,
-        wav.spec().channels
+        channel_description,
     );
 
     // Convert to an ndarray. f32 for fft.

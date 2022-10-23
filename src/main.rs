@@ -122,7 +122,7 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
         glob_string.push_str("/*.wav");
         for entry in glob::glob(&glob_string).context("Error traversing directory")? {
             let entry = entry?;
-            println!("Adding {}", entry.display());
+            println!("\nAdding {}", entry.display());
             add_file(&entry, args.save_png, &args.database, params)?;
         }
 
@@ -154,6 +154,7 @@ fn add_file(
         .filter(|&&loc| *windows.get(loc).unwrap() > analysis_params.magnitude_threshold)
         .map(|&loc| loc)
         .collect();
+    println!("Found {} peaks", max_peak_locations.len());
 
     if save_png {
         save_plots(
@@ -324,7 +325,7 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
 
         let (&best_offset, count) = time_bins.iter().max_by_key(|entry| entry.1).unwrap();
         let best_offset_time = best_offset as f32 * args.window_length;
-        println!("track_id: {:2.}, hash match count: {:3.}, max offset count: {:3.}, best offset: {:>3}s, name: {}", track_id, time_bins.keys().len(), count, best_offset_time as u32, track_info.title);
+        println!("track_id: {:2.}, best offset: {:>3}s, match score: {:3.}, name: {}", track_id, best_offset_time as u32, count, track_info.title);
     }
 
     Ok(())

@@ -42,7 +42,6 @@ pub fn fingerprint(
 
     // Find pairs of peaks where one peak is in the target zone of the other
     let mut close_pairs = vec![];
-    dbg!(peak_locations.len());
     for (i, loc_a) in peak_locations.iter().enumerate() {
         for loc_b in peak_locations[i + 1..].iter() {
             // dbg!(loc_b.0, loc_a.0, target_zone_delay_sec / window_length, target_zone_width_sec / window_length);
