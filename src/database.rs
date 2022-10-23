@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use rusqlite::Connection;
 
@@ -27,7 +27,7 @@ pub fn add_track(conn: &Connection, title: &str) -> Result<u32, anyhow::Error> {
 }
 
 /// Opens the specified database, creating it and the tables if it doesn't yet exist
-pub fn connect(database: &PathBuf) -> Result<Connection, anyhow::Error> {
+pub fn connect(database: &Path) -> Result<Connection, anyhow::Error> {
     let conn = Connection::open(database)?;
 
     // Create tracks table

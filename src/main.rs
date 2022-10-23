@@ -15,6 +15,18 @@ mod database;
 mod hash;
 mod image_ops;
 
+#[derive(Debug, Clone, Copy)]
+struct AnalysisParams {
+    window_length: f32, // in seconds
+    kernel_size: usize, // used for maximum filter
+    magnitude_threshold: f32, // used for maximum filter
+
+    // matching target zone parameters
+    target_zone_delay_sec: f32,
+    target_zone_height_hz: f32,
+    target_zone_width_sec: f32,
+}
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
@@ -23,17 +35,14 @@ struct Args {
 
     #[clap(short, long, parse(from_os_str), default_value = "database.db3")]
     database: PathBuf,
-
     #[clap(short, long, parse(from_os_str), value_name = "FILE")]
     input_wav: PathBuf,
 
     // analysis parameters
     #[clap(long, default_value_t = 0.1)]
     window_length: f32, // in seconds
-
     #[clap(short, default_value_t = 30)]
     kernel_size: usize, // used for maximum filter
-
     #[clap(short, long, default_value_t = 0.1)]
     magnitude_threshold: f32, // used for maximum filter
 
@@ -48,12 +57,6 @@ struct Args {
     // actions
     #[clap(short, long, action, default_value_t = false)]
     save_png: bool,
-
-    #[clap(long, action)]
-    read_from_cache: bool,
-
-    #[clap(long, action)]
-    save_to_cache: bool,
 }
 
 #[derive(clap::Subcommand, Debug, Clone, Copy)]
@@ -98,13 +101,39 @@ fn save_plots(
 }
 
 fn add(args: &Args) -> Result<(), anyhow::Error> {
-    let wav_base_name = args
-        .input_wav
+    let params = AnalysisParams {
+        window_length: args.window_length,
+        kernel_size: args.kernel_size,
+        magnitude_threshold: args.magnitude_threshold,
+        target_zone_delay_sec: args.target_zone_delay_sec,
+        target_zone_height_hz: args.target_zone_height_hz,
+        target_zone_width_sec: args.target_zone_width_sec,
+    };
+
+    if args.input_wav.is_file() {
+        add_file(&args.input_wav, args.save_png, &args.database, params)
+    } else if args.input_wav.is_dir() {
+        let mut glob_string = args.input_wav.to_string_lossy().to_string();
+        glob_string.push_str("/*.wav");
+        for entry in glob::glob(&glob_string).context("Error traversing directory")? {
+            let entry = entry?;
+            println!("Adding {}", entry.display());
+            add_file(&entry, args.save_png, &args.database, params)?;
+        }
+        
+        Ok(())
+    } else {
+        panic!("Please specify a sound file or directory of files to add.");
+    }
+}
+
+fn add_file(input_wav: &Path, save_png: bool, database_path: &Path, analysis_params: AnalysisParams) -> Result<(), anyhow::Error> {
+    let wav_base_name = input_wav
         .file_stem()
         .context("Please provide a file not a directory.")?;
 
-    let windows = audio_ops::read_wav_to_fft(&args.input_wav, args.window_length)?;
-    let filtered = image_ops::max_filter(&windows, args.kernel_size);
+    let windows = audio_ops::read_wav_to_fft(input_wav, analysis_params.window_length)?;
+    let filtered = image_ops::max_filter(&windows, analysis_params.kernel_size);
 
     // find peak locations
     println!("Finding peak locations");
@@ -112,22 +141,22 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
     // filter for only peaks bigger than magnitude threshold
     let max_peak_locations: Vec<(usize, usize)> = peak_locations
         .iter()
-        .filter(|&&loc| *windows.get(loc).unwrap() > args.magnitude_threshold)
+        .filter(|&&loc| *windows.get(loc).unwrap() > analysis_params.magnitude_threshold)
         .map(|&loc| loc)
         .collect();
 
-    if args.save_png {
+    if save_png {
         save_plots(
             wav_base_name,
             windows,
             filtered,
-            args.window_length,
+            analysis_params.window_length,
             &max_peak_locations,
         )?;
     }
 
     // add track to track list
-    let mut conn = database::connect(&args.database)?;
+    let mut conn = database::connect(database_path)?;
     let track_name = wav_base_name.to_string_lossy().to_string();
     let track_id = database::add_track(&conn, &track_name)?;
     println!("Track {} added with id {}", track_name, track_id);
@@ -136,10 +165,10 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
     println!("Fingerprinting");
     let pair_records = hash::fingerprint(
         &max_peak_locations,
-        args.window_length,
-        args.target_zone_delay_sec,
-        args.target_zone_height_hz,
-        args.target_zone_width_sec,
+        analysis_params.window_length,
+        analysis_params.target_zone_delay_sec,
+        analysis_params.target_zone_height_hz,
+        analysis_params.target_zone_width_sec,
     );
     println!("Done fingerprinting");
     let sum: u32 = pair_records.keys().sum();
@@ -276,7 +305,7 @@ fn main() -> Result<(), anyhow::Error> {
     if let Some(action) = args.action {
         match action {
             Action::Add => {
-                println!("Adding track to database.");
+                println!("Adding track(s) to database.");
                 add(&args)?;
             }
             Action::Match => {
@@ -285,14 +314,8 @@ fn main() -> Result<(), anyhow::Error> {
             }
         }
     } else {
-        let conn = database::connect(&args.database)?;
-        let track_name = args
-            .input_wav
-            .file_stem()
-            .context("Please provide a file not a directory.")?
-            .to_string_lossy();
-        let track_id = database::add_track(&conn, track_name.to_string().as_str())?;
-        println!("Track {} added with id {}", track_name, track_id);
+        let path = args.input_wav;
+        println!("{}", path.is_dir());
     }
 
     Ok(())

@@ -1,13 +1,12 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use anyhow::Context;
 use hound::WavReader;
 use ndarray::{Array, Array2, Axis};
 use rustfft::{num_complex::Complex, FftPlanner};
-use serde::{Deserialize, Serialize};
 
 pub fn read_wav_to_fft(
-    filename: &PathBuf,
+    filename: &Path,
     window_length: f32,
 ) -> Result<Array2<f32>, anyhow::Error> {
     println!("Reading wav file");
@@ -63,9 +62,4 @@ pub fn read_wav_to_fft(
     let windows = windows.slice_move(ndarray::s![.., ..((window_size / 2) + 1)]);
 
     Ok(windows)
-}
-
-#[derive(Serialize, Deserialize)]
-struct Spectrogram {
-    data: Array2<f32>,
 }
