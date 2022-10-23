@@ -1,16 +1,15 @@
-//! Records a WAV file (roughly 3 seconds long) using the default input device and config.
-//!
-//! The input data is recorded to "$CARGO_MANIFEST_DIR/recorded.wav".
-
 use anyhow::Context;
 use clap::Parser;
-use itertools::Itertools;
+use ndarray::Array2;
 use rusqlite::params;
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
 };
+
+use crate::hash::PairRecord;
 mod audio_ops;
 mod database;
 mod hash;
@@ -63,6 +62,41 @@ enum Action {
     Match,
 }
 
+fn save_plots(
+    wav_base_name: &OsStr,
+    unfiltered_windows: Array2<f32>,
+    filtered_windows: Array2<f32>,
+    window_length: f32,
+    max_peak_locations: &[(usize, usize)],
+) -> Result<(), anyhow::Error> {
+    // save image files of output if requested
+    let output_dir = Path::new("output");
+    fs::create_dir_all(output_dir)?;
+
+    let mut output_name = wav_base_name.to_os_string();
+    output_name.push("_spec.png");
+    let mut output_name_max = wav_base_name.to_os_string();
+    output_name_max.push("_spec_max.png");
+    let out_path = output_dir.join(output_name);
+    let out_path_max = output_dir.join(output_name_max);
+
+    image_ops::save_png(&unfiltered_windows, out_path);
+    image_ops::save_png(&filtered_windows, out_path_max);
+
+    let mut peaks_filename = wav_base_name.to_os_string();
+    peaks_filename.push("_peaks.png");
+    image_ops::plot_peaks(
+        &max_peak_locations,
+        unfiltered_windows.ncols(),
+        unfiltered_windows.nrows(),
+        window_length,
+        output_dir.join(peaks_filename),
+    )
+    .context(format!("Unable to plot peaks"))?;
+
+    Ok(())
+}
+
 fn add(args: &Args) -> Result<(), anyhow::Error> {
     let wav_base_name = args
         .input_wav
@@ -83,30 +117,13 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
         .collect();
 
     if args.save_png {
-        // save image files of output if requested
-        let output_dir = Path::new("output");
-        fs::create_dir_all(output_dir)?;
-
-        let mut output_name = wav_base_name.to_os_string();
-        output_name.push("_spec.png");
-        let mut output_name_max = wav_base_name.to_os_string();
-        output_name_max.push("_spec_max.png");
-        let out_path = output_dir.join(output_name);
-        let out_path_max = output_dir.join(output_name_max);
-
-        image_ops::save_png(&windows, out_path);
-        image_ops::save_png(&filtered, out_path_max);
-
-        let mut peaks_filename = wav_base_name.to_os_string();
-        peaks_filename.push("_peaks.png");
-        image_ops::plot_peaks(
-            &max_peak_locations,
-            windows.ncols(),
-            windows.nrows(),
+        save_plots(
+            wav_base_name,
+            windows,
+            filtered,
             args.window_length,
-            output_dir.join(peaks_filename),
-        )
-        .context(format!("Unable to plot peaks"))?;
+            &max_peak_locations,
+        )?;
     }
 
     // add track to track list
@@ -118,15 +135,18 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
     // generate fingerprint
     println!("Fingerprinting");
     let pair_records = hash::fingerprint(
-        max_peak_locations,
+        &max_peak_locations,
         args.window_length,
         args.target_zone_delay_sec,
         args.target_zone_height_hz,
         args.target_zone_width_sec,
     );
     println!("Done fingerprinting");
+    let sum: u32 = pair_records.keys().sum();
+    let ave: f32 = (sum as f32) / (pair_records.len() as f32);
+    println!("{:?}", ave);
+
     // add fingerprint to database, deleting existing records
-    // TODO: make this into a transaction
     let transaction = conn.transaction()?;
     {
         let mut delete_statement =
@@ -159,20 +179,35 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
     println!("Finding peak locations");
     let peak_locations = image_ops::find_equal(&windows, &filtered);
     // filter for only peaks bigger than magnitude threshold
-    let max_peak_locations: Vec<(usize, usize)> = peak_locations
-        .iter()
-        .filter(|&&loc| *windows.get(loc).unwrap() > args.magnitude_threshold)
-        .map(|&loc| loc)
-        .collect();
+    // let max_peak_locations: Vec<(usize, usize)> = peak_locations
+    //     .iter()
+    //     .filter(|&&loc| *windows.get(loc).unwrap() > args.magnitude_threshold)
+    //     .map(|&loc| loc)
+    //     .collect();
 
     // generate fingerprint
     let pair_records = hash::fingerprint(
-        max_peak_locations,
+        &peak_locations,
         args.window_length,
         args.target_zone_delay_sec,
         args.target_zone_height_hz,
         args.target_zone_width_sec,
     );
+
+    if args.save_png {
+        let wav_base_name = args
+            .input_wav
+            .file_stem()
+            .context("Please provide a file not a directory.")?;
+
+        save_plots(
+            wav_base_name,
+            windows,
+            filtered,
+            args.window_length,
+            &peak_locations,
+        )?;
+    }
 
     // retrieve all fingerprints with a matching hash, grouped by track_id
     // for each track id, for each matching hash, calculate track_time-sample_time
@@ -183,8 +218,6 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
     let conn = database::connect(&args.database)?;
     rusqlite::vtab::array::load_module(&conn)?;
 
-    let sample_times = pair_records.values().map(|rec| rec.time_a).collect_vec();
-    // let sample_times = std::rc::Rc::new(sample_times.iter().copied().map(rusqlite::types::Value::from).collect::<Vec<rusqlite::types::Value>>());
     let hashes = std::rc::Rc::new(
         pair_records
             .keys()
@@ -203,15 +236,28 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
         let track_id = track_id?;
 
         let mut hash_query = conn.prepare("SELECT hash, track_time FROM fingerprints WHERE track_id = (?1) AND hash IN rarray(?2)")?;
-        let rows = hash_query.query_map(params![track_id, hashes], |row| row.get::<_, u32>(1))?;
-        let track_times: Vec<u32> = rows
+        let rows = hash_query.query_map(params![track_id, hashes], |row| {
+            let hash = row.get::<_, u32>(0);
+            let track_time = row.get::<_, u32>(1);
+            Ok(PairRecord {
+                hash: hash?,
+                time_a: track_time?,
+            })
+        })?;
+        let track_times = rows
             .into_iter()
-            .collect::<Result<Vec<u32>, rusqlite::Error>>()?;
+            .collect::<Result<Vec<PairRecord>, rusqlite::Error>>()?;
 
         let mut time_bins = HashMap::new();
 
-        for (index, &track_time) in track_times.iter().enumerate() {
-            let sample_time = sample_times[index];
+        for track_record in track_times {
+            let track_time = track_record.time_a;
+            let hash = track_record.hash;
+            let sample_time = pair_records
+                .get(&hash)
+                .context("Erroneous hash returned")?
+                .time_a;
+
             if track_time >= sample_time {
                 // matches are only possible in this case
                 let match_offset = track_time - sample_time;

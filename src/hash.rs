@@ -10,9 +10,9 @@ pub struct PeakPair {
     delta_t: usize, // multiple of time_window
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct PairRecord {
-    pub hash: u32, // hash is u32 and not u64 since u32 implements rusqlite::Value::from
+    pub hash: u32,   // hash is u32 and not u64 since u32 implements rusqlite::Value::from
     pub time_a: u32, // multiple of 1/time_window
 }
 
@@ -32,7 +32,7 @@ pub fn calculate_hash<T: Hash>(t: &T) -> u32 {
 }
 
 pub fn fingerprint(
-    peak_locations: Vec<(usize, usize)>,
+    peak_locations: &[(usize, usize)],
     window_length: f32,
     target_zone_delay_sec: f32,
     target_zone_height_hz: f32,
