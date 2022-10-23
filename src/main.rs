@@ -17,14 +17,19 @@ mod image_ops;
 
 #[derive(Debug, Clone, Copy)]
 struct AnalysisParams {
-    window_length: f32, // in seconds
-    kernel_size: usize, // used for maximum filter
+    window_length: f32,       // in seconds
+    kernel_size: usize,       // used for maximum filter
     magnitude_threshold: f32, // used for maximum filter
 
     // matching target zone parameters
     target_zone_delay_sec: f32,
     target_zone_height_hz: f32,
     target_zone_width_sec: f32,
+}
+
+struct TrackInfo {
+    track_id: u32,
+    title: String,
 }
 
 #[derive(Parser, Debug)]
@@ -120,14 +125,19 @@ fn add(args: &Args) -> Result<(), anyhow::Error> {
             println!("Adding {}", entry.display());
             add_file(&entry, args.save_png, &args.database, params)?;
         }
-        
+
         Ok(())
     } else {
         panic!("Please specify a sound file or directory of files to add.");
     }
 }
 
-fn add_file(input_wav: &Path, save_png: bool, database_path: &Path, analysis_params: AnalysisParams) -> Result<(), anyhow::Error> {
+fn add_file(
+    input_wav: &Path,
+    save_png: bool,
+    database_path: &Path,
+    analysis_params: AnalysisParams,
+) -> Result<(), anyhow::Error> {
     let wav_base_name = input_wav
         .file_stem()
         .context("Please provide a file not a directory.")?;
@@ -258,11 +268,29 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
     // find tracks that have at least one match
     let mut track_query =
         conn.prepare("SELECT DISTINCT track_id FROM fingerprints WHERE hash IN rarray(?1)")?;
-    let candidate_tracks = track_query.query_map(params![hashes], |row| row.get::<_, u32>(0))?;
+    let candidate_ids = track_query
+        .query_map(params![hashes], |row| row.get::<_, u32>(0))?
+        .map(|res| res.unwrap());
+    // get titles
+    let candidate_ids = std::rc::Rc::new(
+        candidate_ids
+            .map(rusqlite::types::Value::from)
+            .collect::<Vec<rusqlite::types::Value>>(),
+    );
+    let mut track_info_query =
+        conn.prepare("SELECT id, title FROM tracks WHERE id IN rarray(?1)")?;
+    let candidate_tracks = track_info_query.query_map(params![candidate_ids], |row| {
+        Ok(TrackInfo {
+            track_id: row.get::<_, u32>(0)?,
+            title: row.get::<_, String>(1)?,
+        })
+    })?;
 
-    for track_id in candidate_tracks {
+    println!("\nMatching fingerprints against the database:");
+    for track_info in candidate_tracks {
         // find hash matches and bin based on track-sample time offset
-        let track_id = track_id?;
+        let track_info = track_info?;
+        let track_id = track_info.track_id;
 
         let mut hash_query = conn.prepare("SELECT hash, track_time FROM fingerprints WHERE track_id = (?1) AND hash IN rarray(?2)")?;
         let rows = hash_query.query_map(params![track_id, hashes], |row| {
@@ -293,7 +321,10 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
                 *time_bins.entry(match_offset).or_insert(0) += 1;
             }
         }
-        println!("track_id: {}, {:#?}", track_id, time_bins);
+
+        let (&best_offset, count) = time_bins.iter().max_by_key(|entry| entry.1).unwrap();
+        let best_offset_time = best_offset as f32 * args.window_length;
+        println!("track_id: {:2.}, hash match count: {:3.}, max offset count: {:3.}, best offset: {:>3}s, name: {}", track_id, time_bins.keys().len(), count, best_offset_time as u32, track_info.title);
     }
 
     Ok(())
