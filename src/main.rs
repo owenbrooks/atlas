@@ -224,6 +224,7 @@ fn match_sample(args: &Args) -> Result<(), anyhow::Error> {
         .filter(|&&loc| *windows.get(loc).unwrap() > args.magnitude_threshold)
         .map(|&loc| loc)
         .collect();
+    println!("Found {} peaks", max_peak_locations.len());
 
     // generate fingerprint
     let pair_records = hash::fingerprint(

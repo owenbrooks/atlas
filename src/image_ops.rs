@@ -114,6 +114,7 @@ pub fn plot_peaks(
 
     let areas = root.split_by_breakpoints([width as u32 - 40], [40]);
     dbg!(window_length, ((width as f32) * window_length) as usize);
+
     let mut scatter_ctx = ChartBuilder::on(&areas[2])
         .x_label_area_size(40)
         .y_label_area_size(40)
@@ -125,6 +126,8 @@ pub fn plot_peaks(
         .configure_mesh()
         .disable_x_mesh()
         .disable_y_mesh()
+        .y_desc("Frequency (Hz)")
+        .x_desc("Time (s)")
         .draw()?;
     scatter_ctx.draw_series(peak_locations.iter().map(|(x, y)| {
         Circle::new(
