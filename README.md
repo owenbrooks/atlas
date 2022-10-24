@@ -28,4 +28,14 @@ Run matching:
 - These are either stored in the database, or matched against existing hashes in the database
 - If many of the hashes in the sample match to a particular point in time of a particular song in the database, it is a succesful match
 
+Original Spectrogram           |  Filtered Spectrogram
+:-------------------------:|:-------------------------:
+![Lawrence - Make A Move_spec](https://user-images.githubusercontent.com/7232997/197457789-843fbe1d-042b-46f0-a688-a0dbea2d7c18.png)  |  ![Lawrence - Make A Move_spec_max](https://user-images.githubusercontent.com/7232997/197457798-1c3ea095-b301-4b52-8dda-b6313155fda0.png)
+
+Peak Locations
+:-------------------------:
+![Lawrence - Make A Move_peaks](https://user-images.githubusercontent.com/7232997/197457812-29aabc17-fb23-4ad9-8534-21a000665bf6.png)
+
+The track info and hashes are stored in a sqlite database on disk.
+
 See https://www.ee.columbia.edu/~dpwe/papers/Wang03-shazam.pdf and https://www.cameronmacleod.com/blog/how-does-shazam-work for further explanations of the algorithm.
